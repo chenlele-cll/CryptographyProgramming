@@ -1,186 +1,218 @@
-# 方案设计
+# Distributed Key Management and Multi-Party Signing Prototype
 
-* [方案设计](#方案设计)
-  * [场景一：第一步：得到加密数](#场景一第一步得到加密数)
-  * [场景一：第二步：得到基数 D](#场景一第二步得到基数-d)
-  * [场景一：第三步：生成公钥和私钥](#场景一第三步生成公钥和私钥)
-  * [场景一：第四步：可靠存储](#场景一第四步可靠存储)
-  * [场景二：共同签名，自动验证签名](#场景二共同签名自动验证签名)
-  * [场景三：任意两个存储商倒闭（部分数据在），恢复密钥](#场景三任意两个存储商倒闭部分数据在恢复密钥)
-* [测试](#测试)
+English | [中文](README.zh-CN.md)
 
-## 场景一：第一步：得到加密数
+## Project Overview
 
-通过用户输入的 key 进行两次 Enigma 机的加密，获得大小数 d1 和 d2。
+`Distributed Key Management and Multi-Party Signing Prototype` is a distributed cryptography prototype for group key generation, reliable key custody, jointly authorized signing, and recoverable keys in a multi-user environment.
+Its core goal is clear: the RSA private key must not be held by any single party, signing must require multi-party authorization, private-key shards must be reliably stored in a zero-trust storage environment, and the key must be recoverable after failures.
 
-其中 Enigma 机的初始位置通过用户名称设定，随机而确定。
+The prototype connects users, SMPC nodes, the signing service, the storage gateway, storage providers, and blockchain-side verification into an end-to-end collaborative workflow. It is not a standalone encryption tool; it focuses on the full distributed process.
 
-![](figs/d1d2.png)
+### Main Modules
 
-## 场景一：第二步：得到基数 D
+| Module | Responsibility |
+| --- | --- |
+| Users | User-side entry point for key input, group creation, signing requests, and recovery |
+| MPC-1 / MPC-2 / MPC-Main | Collaboratively perform SMPC, base D negotiation, key generation, and recovery coordination |
+| Sign Server | Handles AES/RSA exchange, private-key shard lookup, and group signing |
+| StorageGateway | Routes shards, resolves storage mappings, and writes recovered data back |
+| Storage-1 / Storage-2 / Storage-3 | Zero-trust storage nodes that hold public-key blocks and redundant private-key shard blocks |
+| BlockChainSystem | Receives messages and signatures, verifies signatures, and checks message integrity |
 
-- MPC-Main 随机生成信息的传递路径
-- 根据路径传递 d + R 的累加值
-- 传递完成后，每个用户上报自己的随机数
-- MPC-Main 将随机数减去获得 d 的累加值
-- 重复两次以上操作获得 d1 和 d2 的累加值，D1 和 D2
+```mermaid
+flowchart LR
+    Users[Users] -->|key input, group commands, authorization| MPC[MPC-1 / MPC-2 / MPC-Main]
+    Users -->|encrypted signing request| SignServer[Sign Server]
+    MPC -->|group key generation and recovery coordination| StorageGateway[StorageGateway]
+    SignServer -->|private-key shard request| StorageGateway
+    StorageGateway --> Storage1[Storage-1]
+    StorageGateway --> Storage2[Storage-2]
+    StorageGateway --> Storage3[Storage-3]
+    SignServer -->|message + signature + public key| BlockChainSystem[BlockChainSystem]
+    BlockChainSystem -->|verification result| SignServer
+```
 
-这样能够保证用户的 d1 和 d2 在传递的过程中不暴露，从而保证的自己的 key 的安全性
+### Key Technical Points
 
-下图是一次 SMPC 的流程，获得 D1 和 D2 需要执行两次 SMPC
+- Key derivation: Enigma-style reversible encryption, with the initial position determined by username. The result is random but reproducible, and the input character range covers `a-z`, `A-Z`, and `0-9`.
+- Collaborative key generation: SMPC jointly derives base D, so no single party can reverse the Key. RSA key generation uses the GMP multiple-precision arithmetic library for big-integer computation.
+- Secure communication and signing: RSA is used as the core public-key algorithm for group keys and signatures. AES protects messages and signing requests, while RSA public-key encryption exchanges the AES key to establish a secure session.
+- Reliable custody: Reed-Solomon erasure coding, private-key sharding, and zero-trust storage provide redundancy and prevent the full private key from existing at a single point.
+- Authorization and verification: signing requires multiple online authorizers, and signed messages are checked through SHA256 digests and blockchain-side automatic signature verification.
 
-![](figs/baseD.png)
+### Tech Stack
 
-## 场景一：第三步：生成公钥和私钥
+| Category | Selection |
+| --- | --- |
+| Language | Java 8 |
+| Build | Maven |
+| Logging | SLF4J, Logback |
+| Utility Libraries | Lombok, Commons Lang3 |
+| Crypto Support | Spring Security Crypto |
+| Big-Integer Arithmetic | GMP multiple-precision arithmetic library |
+| Reliable Storage | Reed-Solomon erasure coding |
 
-将 128 位的 D1 和 D2 等比例扩充到 1024 位
+## Core Scenarios
 
-<div>
-<img src="figs/padding.png" width="45%" alt=""/>
-</div>
+1. Scenario 1: Key Generation and Reliable Storage
+   - Step 1: Derive encrypted numbers
+     - Implement an Enigma-like reversible encryption mechanism. The initial position is set by username and must be random but deterministic.
+     - Encrypt key-related data twice with Enigma to obtain `d1` and `d2`. Given `d1` or `d2`, the original `Key` can be reversed.
+     - The character range is `a-z`, `A-Z`, and `0-9`; alphabet substitution is not required.
 
-通过 Miller-Rabin 素性测试找到素数 P 和 Q，生成 RSA 公私钥
+   - Step 2: Derive base `D` through secure multi-party computation
+     - `MPC-1`, `MPC-2`, and `MPC-Main` compute collaboratively, and no party can independently reverse the `Key`.
+     - `D ∈ (max(d11,d12)+max(d21+d22), min(d11,d12)+min(d21,d22))`.
+     - Design a random but deterministic selection method.
 
-![](figs/rsa.png)
+   - Step 3: Generate the RSA public and private keys
+     - `MPC-Main` generates the RSA key pair from `D`.
+     - Find prime `P`: it must satisfy `P >= D`, meet RSA requirements, and be the smallest valid candidate.
+     - Use the GMP multiple-precision arithmetic library and the RSA key-pair generation algorithm.
+     - The group identifier is formed by concatenating all user names.
 
-## 场景一：第四步：可靠存储
+   - Step 4: Reliable storage
+     - The private key is not stored as a whole. It is split into private-key shards and stored under a zero-trust model, where storage providers only hold shards and cannot reconstruct the full private key.
+     - Reed-Solomon erasure coding is used for redundant storage.
+     - The goal is to tolerate any one failure among three storage operators while still supporting signing. Signing must require at least two users to authorize online, and storage overhead should be minimized.
+     - Storage form:
+       - `group identifier -> public key`
+       - `(user, group identifier, shard index) -> private-key shard`
+       - Private-key shards are stored with RS erasure coding.
 
-私钥存储流程：
+2. Scenario 2: Joint Signing and Automatic Verification
+   - Users generate an AES symmetric key and request the RSA public key from the Sign Server.
+   - Users encrypt the AES key with the public key and register/pass it to the Sign Server. They then encrypt the signing request with the AES key. The request contains the username, group identifier, and other fields, producing encrypted message `EM`.
+   - The Sign Server decrypts the AES key with its private key, then decrypts `EM` to recover the original message `M`.
+   - The Sign Server retrieves the corresponding private-key shards from StorageGateway and waits until all/enough users authorize. The main criterion is whether the total private-key shard length satisfies the signing requirement.
+   - The system generates a SHA256 hash for the message, encrypts the digest with the private key to create the digital signature, and sends `message + signature + public-key information` to the blockchain system.
+   - Blockchain system:
+     - Decrypts the signature with the public key to obtain hash value 1.
+     - Recomputes SHA256 over the message to obtain hash value 2.
+     - Compares the two hashes. If they match, the message has not been tampered with.
 
-- 根据用户数量将私钥划分成若干个私钥碎片
-- 每个私钥碎片通过 [Reed Solomon](https://github.com/RobinLiew/JavaReedSolomon) 纠删码进行冗余存储，分为 4 个数据块和 2 个校验块
-- 将数据块和校验块平均存储到三个存储商当中，能够保证一个存储商倒闭不影响业务
-  
-公钥存储过程：
-<div>
-<img src="figs/pubkeyStoreProcess.jpg" width="55%" alt=""/>
-</div>
+3. Scenario 3: Key Recovery
+   - Users input `key`, obtain `sumD1` and `sumD2`, and send both to Main.
+   - Main regenerates the public/private key pair and sends the recovered public key to StorageGateway.
+   - StorageGateway checks whether private-key recovery is correct and whether matching fragments can be found in the remaining data.
+   - After the check passes, Main reports recovery success, and StorageGateway stores the recovered private key.
 
-私钥存储过程：
-<div>
-<img src="figs/priKeyStoreProcess.jpg" width="55%" alt=""/>
-</div>
+## Design
 
+### 1. Key Generation and Reliable Storage
 
-存储商存储形式：
+Key generation starts from the user-provided key. The system runs the Enigma machine twice to obtain large numbers `d1` and `d2`. The initial Enigma position is set by username, making the result random but deterministic.
 
-- 公钥键值哈希 -> 公钥数据块
-- 私钥键值哈希 -> 私钥碎片数据块
-- 键值哈希计算逻辑由 MPCMain 掌控
-- 公钥和私钥碎片都通过 Reed Solomon 进行存储，均包含 4 个数据块和 2 个校验块
+![Derive d1 and d2](figs/d1d2.png)
 
-<div>
-<img src="figs/storage.jpg" width="50%" alt=""/>
-</div>
+After obtaining `d1` and `d2`, the system derives base `D` through SMPC. `MPC-Main` randomly generates an information transfer path. Users pass the accumulated value of `d + R` along the path. After the transfer completes, each user reports their random number, and `MPC-Main` subtracts these random numbers to obtain the accumulated value of `d`. This process runs separately for `d1` and `d2`, producing `D1` and `D2`.
 
-磁盘利用率：4/(4+2)=2/3
+This design prevents users' `d1` and `d2` from being directly exposed during transmission, protecting the original key. The following diagram shows one SMPC process; deriving both `D1` and `D2` requires running SMPC twice.
 
-![](figs/diskUseRate.png)
+![SMPC process](figs/baseD.png)
 
-## 场景二：共同签名，自动验证签名
+The system then expands the 128-bit `D1` and `D2` proportionally to 1024 bits, finds primes `P` and `Q` through the Miller-Rabin primality test, and generates the RSA public/private key pair.
 
-关键点：
+![Data padding](figs/padding.png)
 
-- SignServer 自己有 RSA key，用户通过 SignServer 的公钥加密对称密钥进行密钥交换
-- 用户通过对称密钥加密请求信息与 SignServer 进行交互
-- 签名请求只有等到授权人数达到组人数才会发送给区块链系统
+![RSA generation](figs/rsa.png)
 
-![](figs/scenario2.png)
+The private key is not stored as a whole. It is split into multiple private-key shards according to the number of users. Each shard is redundantly stored through Reed-Solomon erasure coding: 4 data blocks and 2 parity blocks are evenly stored across three storage providers, allowing the system to continue operating if one provider fails.
 
-## 场景三：任意两个存储商倒闭（部分数据在），恢复密钥
+The public-key and private-key storage processes are shown below.
 
-核心思想：将恢复的公私钥转换成数据块，判断剩余存储商中的数据块是否有匹配块，匹配成功则说明恢复正确，反之恢复失败
+![Public-key storage process](figs/pubkeyStoreProcess.jpg)
 
-![](figs/recover.png)
+![Private-key storage process](figs/priKeyStoreProcess.jpg)
 
-# 测试
+Storage providers use key-value hashes to store data. The public-key hash maps to a public-key data block, and the private-key hash maps to a private-key shard data block. The hash calculation logic is controlled by `MPCMain`. Both public keys and private-key shards are stored through Reed-Solomon and contain 4 data blocks plus 2 parity blocks.
 
-首先启动六个服务，包括 MPCMain、SignServer、BlockChainSystem 和三个存储商
+![Storage structure](figs/storage.jpg)
 
-```java
+Disk utilization is `4 / (4 + 2) = 2 / 3`.
+
+![Disk utilization](figs/diskUseRate.png)
+
+### 2. Joint Signing and Automatic Verification
+
+During signing, the client and `SignServer` first complete key exchange. `SignServer` has its own RSA key. The user retrieves the `SignServer` public key, uses it to encrypt the symmetric key, and then communicates with `SignServer` using requests encrypted by that symmetric key.
+
+Signing requests are not sent to the blockchain system immediately. They continue only after the number of authorizers reaches the group size. Once authorization is satisfied, `SignServer` generates the digital signature with the group private key, sends the message, signature, and public-key information to `BlockChainSystem`, and the blockchain system automatically checks whether the message has been tampered with.
+
+![Joint signing process](figs/scenario2.png)
+
+### 3. Key Recovery
+
+When any two storage providers fail but partial data remains, the system needs to recover the key. The core idea is to convert the recovered public/private key back into data blocks and check whether matching blocks exist in the remaining storage providers. A match means the recovery is correct; otherwise recovery fails.
+
+After successful recovery, the system regenerates the RSA key pair and writes it to the surviving storage providers. If only one storage provider remains alive, all 6 Reed-Solomon blocks are stored together on that provider, and the business workflow can continue.
+
+![Key recovery process](figs/recover.png)
+
+## Command Reference
+
+| Command | Description |
+| --- | --- |
+| `-c@group` | Create a group |
+| `-j@uuid` | Join a group by uuid |
+| `-gl` | List current groups |
+| `-s1t@group` | Generate and store the group RSA key pair |
+| `-s2t@group:message` | Start group signing; `message` is the content to sign |
+| `-s3t@group` | Recover the key |
+
+Note: `-s1t`, `-s2t`, and `-s3t` all depend on group authorization. Whether the process continues is coordinated by `MPCMain`.
+
+## Startup Order
+
+Start services before starting clients. The recommended order is `MPCMain`, `SignServer`, `BlockChainSystem`, `Storage-1`, `Storage-2`, `Storage-3`, then `Client`.
+
+```bash
 java -jar MPCMain.jar
 java -jar SignServer.jar
+java -jar BlockChainSystem.jar
 java -jar Storage.jar 1
 java -jar Storage.jar 2
 java -jar Storage.jar 3
-```
-
-启动若干个客户端，本次测试启动两个，名字分别为 jiajia 和 lele
-
-```java
 java -jar Client.jar
 ```
 
-![](figs/clientLogin.png)
+## Demo Screenshots
 
-创建组 chenchen
+`design/seq.md` keeps the sequence diagrams and additional design notes. It is useful for understanding the workflow before reading implementation details and screenshots.
 
-```bash
--c@chenchen
-```
+### Client Login and Group Creation
 
-MPCMain 会创建对应的组并将信息返回给客户端
+![Client login](figs/clientLogin.png)
 
-![](figs/createGroup.png)
+![Create group](figs/createGroup.png)
 
-另一个用户通过 uuid 加入组
+![Group list](figs/groupList.png)
 
-```bash
--j@881fbe48ac354dac838b53c864018e22
-```
+### Generate and Store Group Key
 
-客户端会给出提示是否加入成功，也可以通过 -gl 命令查看所在的组
+![Generate group key 1](figs/s1t1.png)
 
-![](figs/groupList.png)
+![Generate group key 2](figs/s1t2.png)
 
-生成 RSA 组密钥对并存储
+### Group Signing and Blockchain Verification
 
-```bash
--s1t@chenchen
-```
+![Signing demo](figs/blockchainSystemCheck.png)
 
-需要组内所有人授权 MPC-Main 才会执行
+![Signing test 1](figs/scenario2TestImg.png)
 
-![](figs/s1t1.png)
+![Signing tamper test](figs/scenario2TamperTestImg.png)
 
-![](figs/s1t2.png)
+![Signing reliability test](figs/scenario2ReliabilityTestImg.png)
 
-进行组签名，同样是需要组内所有人授权后才会生成信件发送给区块链系统
+### Storage Failure and Recovery
 
-```bash
--s2t@chenchen:nihao
--s2t@chenchen:haha
+![Storage provider failure](figs/mpcStorageNotWorking.png)
 
-```
+![Data loss prompt](figs/dataLost.png)
 
-区块链系统收到消息以后自动验证信件的信息是否被篡改
+![Recovery failed](figs/recoverFailed.png)
 
-![](figs/blockChainSystemCheck.png)
+![Recovery succeeded](figs/recoverSucess.png)
 
-接下来我们破坏存储商 2，测试是否业务是否能正常进行
-
-可以看到 MPCMain 可以感知到对应的存储商是否在工作，并且不会影响业务的正常进行
-
-![](figs/mpcStorageNotWorking.png)
-
-接下来测试恢复密钥，下线存储商 3，此时如果再进行签名请求，会告知用户数据丢失，需要恢复密钥
-
-![](figs/dataLost.png)
-
-```bash
--s3t@chenchen
-```
-
-我们首先故意输入错误的 key，查看程序是否能感知
-
-![](figs/recoverFailed.png)
-
-再输入正确的 key，查看是否能够恢复
-
-![](figs/recoverSucess.png)
-
-重新生成 rsa 密钥对会平均分配到存活的存储商中，因为此场景只存活了一个存储商，因此会将 6 个数据块都放在一起
-
-![](figs/recoverStore.png)
-
-随后，又可以正常进行业务
+![Recovered storage](figs/recoverStore.png)
