@@ -225,7 +225,7 @@ sequenceDiagram
     SignServer->>BlockChainSystem: Pass letter: message + signature + public-key information
     BlockChainSystem->>BlockChainSystem: Decrypt signature with public key to obtain hash value 1
     BlockChainSystem->>BlockChainSystem: Generate digest hash value 2 from message through SHA256
-    BlockChainSystem->>BlockChainSystem: Compare hash value 1 and hash value 2; equal means message was not tampered with
+    BlockChainSystem->>BlockChainSystem: Compare hash value 1 and hash value 2 to confirm the message was not tampered with
 ```
 
 ### 3. Key Recovery

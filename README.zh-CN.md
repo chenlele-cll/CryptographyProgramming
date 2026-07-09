@@ -225,7 +225,7 @@ sequenceDiagram
     SignServer->>BlockChainSystem: 传递信件：信息 + 签名 + 公钥信息
     BlockChainSystem->>BlockChainSystem: 通过公钥解密签名获得哈希值1
     BlockChainSystem->>BlockChainSystem: 通过 SHA256 对信息生成数字摘要哈希值2
-    BlockChainSystem->>BlockChainSystem: 比对哈希值1和哈希值2是否相等，相等则信息未被篡改
+    BlockChainSystem->>BlockChainSystem: 比对哈希值1和哈希值2是否相等并确认信息未被篡改
 ```
 
 ### 3. 密钥恢复
