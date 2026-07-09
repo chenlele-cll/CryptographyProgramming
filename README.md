@@ -181,13 +181,19 @@ flowchart LR
     PrivHash --> PrivBlocks
 ```
 
-Storage providers use key-value hashes to store data. The public-key hash maps to a public-key data block, and the private-key hash maps to a private-key shard data block. The hash calculation logic is controlled by `MPCMain`. Both public keys and private-key shards are stored through Reed-Solomon and contain 4 data blocks plus 2 parity blocks.
+Storage providers use key-value hashes to store data. The hash calculation logic is controlled by `MPCMain`, and the storage mappings are:
 
-![Storage structure](figs/storage.jpg)
+- public-key hash -> public-key data block
+- private-key shard hash -> private-key shard data block
 
-Disk utilization is `4 / (4 + 2) = 2 / 3`.
+Both public keys and private-key shards are stored through Reed-Solomon and contain 4 data blocks plus 2 parity blocks.
 
-![Disk utilization](figs/diskUseRate.png)
+Storage efficiency comparison:
+
+| Technique | Disk utilization | Compute overhead | Network overhead | Recovery efficiency |
+| --- | --- | --- | --- | --- |
+| Multi-replica storage (3 replicas) | 1/3 | Almost none | Low | High |
+| Erasure coding (n+m) | n/(n+m) | High | Higher | Lower |
 
 ### 2. Joint Signing and Automatic Verification
 
