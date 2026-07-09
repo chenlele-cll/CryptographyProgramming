@@ -1,0 +1,19 @@
+# Maven build output
+target/
+
+# IDE and editor files
+.idea/
+*.iml
+.vscode/
+
+# Local agent workspace
+.omo/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Logs and local runtime files
+*.log
+*.tmp
+*.temp
