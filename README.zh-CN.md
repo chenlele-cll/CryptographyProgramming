@@ -104,27 +104,82 @@ flowchart LR
 
 密钥生成从用户输入的 key 开始。系统使用 Enigma 机进行两次加密，得到大小数 `d1` 和 `d2`；Enigma 的初始位置由用户名设定，因此结果随机但可确定。
 
-![生成 d1 和 d2](figs/d1d2.png)
+```sequence
+Title: 用户生成大小数 d1 和 d2
+用户->Enigma:8 位密钥 key
+Note right of Enigma:初始位置通过用户名称设定（随机而确定）
+Enigma->Enigma:基于 key 加密一次生成 strD1
+Enigma->Enigma:基于 key 加密一次生成 strD2
+Enigma-->用户:基于 strD1 和 strD2 转换成大小数 d1 和 d2
+```
 
 获得 `d1` 和 `d2` 后，系统通过 SMPC 得到基数 `D`。`MPC-Main` 随机生成信息传递路径，用户按照路径传递 `d + R` 的累加值；传递完成后，每个用户上报自己的随机数，`MPC-Main` 再减去这些随机数，得到 `d` 的累加值。这个过程分别执行在 `d1` 和 `d2` 上，最终得到 `D1` 和 `D2`。
 
 这样设计可以避免用户的 `d1` 和 `d2` 在传递过程中直接暴露，从而保护原始 key 的安全性。下图展示的是一次 SMPC 流程，完整获得 `D1` 和 `D2` 需要执行两次 SMPC。
 
-![多方安全计算流程](figs/baseD.png)
+```sequence
+Title:多方安全计算获得基数 D
+Main->Main:随机生成信息传递路径（如 1-3-2-4）
+Main->User1:信息传递路径
+User1->User3:X1=R1+d1
+User3->User2:X3=X1+R3+d3
+User2->User4:X2=X3+R2+d2
+User4-->Main:X4=X2+R4+d4
+Note right of User4:128 位随机数 R 通过 SecureRandom 产生
+User1-->Main:R1
+User3-->Main:R3
+User2-->Main:R2
+User4-->Main:R4
+Main->Main:sum(d)=d1+d2+d3+d4=X4-R1-R2-R3-R4
+Main->Main:D1=sum(d1), D2=sum(d2)
+```
 
 随后，系统将 128 位的 `D1` 和 `D2` 等比例扩充到 1024 位，再通过 Miller-Rabin 素性测试找到素数 `P` 和 `Q`，生成 RSA 公私钥。
 
-![数据填充](figs/padding.png)
+```mermaid
+graph TD
+    A(输入待填充数据 D1 和 D2) --> B[计算填充倍数 = 1024 / 128 = 8]
+    B --> C[将原始数据中的每一个字节填充到 8 个字节]
+    C --> D(输出 1024 位的 D1 和 D2)
+```
 
-![RSA 生成](figs/rsa.png)
+```mermaid
+graph TD
+    A(输入 1024 位的 D1 和 D2) --> B[通过 Miller-Rabin 素性测试找到 P, Q]
+    B --> C[计算 n = P * Q]
+    C --> D[计算 n 的欧拉函数 φ]
+    D --> E[选择整数 e = 65537]
+    E --> F[计算 e 对于 φ 的模反元素 d]
+    F --> G(封装 n 和 e 为公钥, n 和 d 为私钥)
+```
 
 私钥不会整体保存，而是根据用户数量拆成若干个私钥碎片。每个私钥碎片通过 Reed-Solomon 纠删码进行冗余存储，拆分为 4 个数据块和 2 个校验块，再平均存储到三个存储商中，从而保证一个存储商倒闭时业务仍可继续。
 
 公钥和私钥的存储过程如下。
 
-![公钥存储流程](figs/pubkeyStoreProcess.jpg)
+```mermaid
+flowchart LR
+    PublicKey[组公钥] --> RSPub[Reed-Solomon 编码]
+    RSPub --> PubBlocks[4 个数据块 + 2 个校验块]
+    PubBlocks --> Storage1[Storage-1]
+    PubBlocks --> Storage2[Storage-2]
+    PubBlocks --> Storage3[Storage-3]
+    MPCMain[MPCMain] -->|控制键值哈希逻辑| PubHash[公钥键值哈希]
+    PubHash --> PubBlocks
+```
 
-![私钥存储流程](figs/priKeyStoreProcess.jpg)
+```mermaid
+flowchart LR
+    PrivateKey[组私钥] --> Split[按用户数量切分]
+    Split --> Shards[私钥碎片]
+    Shards --> RSPriv[每个碎片进行 Reed-Solomon 编码]
+    RSPriv --> PrivBlocks[4 个数据块 + 2 个校验块]
+    PrivBlocks --> Storage1[Storage-1]
+    PrivBlocks --> Storage2[Storage-2]
+    PrivBlocks --> Storage3[Storage-3]
+    MPCMain[MPCMain] -->|控制键值哈希逻辑| PrivHash[私钥碎片键值哈希]
+    PrivHash --> PrivBlocks
+```
 
 存储商采用键值哈希形式保存数据：公钥键值哈希对应公钥数据块，私钥键值哈希对应私钥碎片数据块。键值哈希的计算逻辑由 `MPCMain` 掌控。公钥和私钥碎片都通过 Reed-Solomon 存储，均包含 4 个数据块和 2 个校验块。
 
@@ -140,7 +195,28 @@ flowchart LR
 
 签名请求不会立即发送给区块链系统，而是必须等授权人数达到组人数后才会继续执行。满足授权条件后，`SignServer` 使用组私钥生成数字签名，并将消息、签名和公钥信息发送给 `BlockChainSystem`，由区块链系统自动验证消息是否被篡改。
 
-![共同签名流程](figs/scenario2.png)
+```sequence
+Title:共同签名，自动验证签名
+User->User:生成 AES 对称加密密钥
+User->Sign Server:获取公钥
+Sign Server->Sign Server:生成 RSA 公私钥对
+Sign Server-->User:返回公钥
+User->User:通过公钥加密对称密钥
+User->Sign Server:注册，传递加密的对称密钥
+Sign Server->Sign Server:通过私钥解密获得对称密钥
+User->User:通过对称密钥加密签名信息 M，包括用户名、组标识和信息，得到 EM
+User->Sign Server:传递 EM
+Sign Server->Sign Server:通过私钥解密 EM 获得 M
+Sign Server->StorageGateway:获取对应的私钥碎片
+StorageGateway-->Sign Server:返回私钥碎片
+Sign Server->Sign Server:等待所有人授权，主要判断私钥碎片总长度是否符合
+Sign Server->Sign Server:通过 SHA256 对要传递的消息生成摘要哈希值
+Sign Server->Sign Server:通过组私钥对摘要加密，生成数字签名
+Sign Server->BlockChainSystem:传递信件：信息 + 签名 + 公钥信息
+BlockChainSystem->BlockChainSystem:通过公钥解密签名获得哈希值1
+BlockChainSystem->BlockChainSystem:通过 SHA256 对信息生成数字摘要哈希值2
+BlockChainSystem->BlockChainSystem:比对哈希值1和哈希值2是否相等，相等则信息未被篡改
+```
 
 ### 3. 密钥恢复
 
@@ -148,7 +224,18 @@ flowchart LR
 
 恢复成功后，系统会重新生成 RSA 密钥对并写入存活的存储商。如果只剩一个存储商存活，6 个 Reed-Solomon 数据块会集中存放到该存储商中，随后业务可以继续运行。
 
-![密钥恢复流程](figs/recover.png)
+```sequence
+Title:密钥恢复
+Users->Users:输入 key，获得 sumD1 和 sumD2
+Users->Main:传递 sumD1 和 sumD2
+Main->Main:重新生成公私钥
+Main->StorageGateway:传递恢复的公私钥
+StorageGateway->StorageGateway:检查私钥恢复是否正确，判断剩余数据是否能查找到匹配片段
+StorageGateway->StorageGateway:检查公钥恢复是否正确，判断剩余数据是否能查找到匹配片段
+StorageGateway-->Main:检查结果
+Main->StorageGateway:恢复成功
+StorageGateway->StorageGateway:存储公私钥
+```
 
 ## 命令参考
 
